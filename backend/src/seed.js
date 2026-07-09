@@ -12,6 +12,29 @@ const FIRST_ADMIN = {
   jobRole: "Rota Coordinator",
 };
 
+// Additional manager accounts — added after go-live, so they don't get the
+// `bank_approved` field: managers don't claim shifts, so it's irrelevant for them,
+// but the column is NOT NULL, hence `true` below (matches how staff-approval works
+// for the admin account too).
+const MANAGERS = [
+  {
+    firstName: "Paige",
+    lastName: "Ellis",
+    email: "paige.ellis@fhcsltd.co.uk",
+    phone: "01254643611",
+    password: "Birch-Otter-5227!", // change on first login
+    jobRole: "Care Coordinator",
+  },
+  {
+    firstName: "Alisha",
+    lastName: "Finn",
+    email: "alisha.finn@fhcsltd.co.uk",
+    phone: "01254643611",
+    password: "Otter-Cobalt-5108!", // change on first login
+    jobRole: "Care Coordinator",
+  },
+];
+
 // NOTE: placeholder locations kept for the pilot per FHCS's instruction — replace
 // with real site names before wider rollout.
 const LOCATIONS = [
@@ -30,6 +53,17 @@ async function seed() {
      ON CONFLICT (email) DO NOTHING`,
     [FIRST_ADMIN.firstName, FIRST_ADMIN.lastName, FIRST_ADMIN.email, FIRST_ADMIN.phone, passwordHash, FIRST_ADMIN.jobRole]
   );
+
+  for (const mgr of MANAGERS) {
+    const mgrHash = await bcrypt.hash(mgr.password, 12);
+    await pool.query(
+      `INSERT INTO users (role, first_name, last_name, email, phone, password_hash, job_role, bank_approved, status)
+       VALUES ('manager', $1, $2, $3, $4, $5, $6, true, 'active')
+       ON CONFLICT (email) DO NOTHING`,
+      [mgr.firstName, mgr.lastName, mgr.email, mgr.phone, mgrHash, mgr.jobRole]
+    );
+    console.log(`Seeded manager: ${mgr.email} / ${mgr.password}`);
+  }
 
   for (const loc of LOCATIONS) {
     await pool.query(
