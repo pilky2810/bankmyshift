@@ -5,6 +5,7 @@ const db = require("../db");
 const { hashPassword, verifyPassword, generateResetCode, hashResetCode, verifyResetCode } = require("../utils/password");
 const email = require("../services/emailService");
 const { logAction } = require("../middleware/auditLog");
+const { requireAuth } = require("../middleware/auth");
 
 const router = express.Router();
 
@@ -114,6 +115,31 @@ router.post("/reset-password", async (req, res) => {
   await logAction({ actorId: user.id, action: "auth.password_reset_completed", entityType: "user", entityId: user.id });
 
   res.json({ message: "Password updated. You can now sign in." });
+});
+
+// POST /auth/change-password — for a signed-in user changing their own password
+// (doesn't need email — unlike forgot/reset-password, which do).
+router.post("/change-password", requireAuth, async (req, res) => {
+  const { currentPassword, newPassword } = req.body || {};
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: "Current and new password are required." });
+  }
+  if (newPassword.length < 8) {
+    return res.status(400).json({ error: "New password must be at least 8 characters." });
+  }
+
+  const { rows } = await db.query(`SELECT * FROM users WHERE id = $1`, [req.user.id]);
+  const user = rows[0];
+  if (!user) return res.status(404).json({ error: "User not found." });
+
+  const valid = await verifyPassword(currentPassword, user.password_hash);
+  if (!valid) return res.status(401).json({ error: "Current password is incorrect." });
+
+  const newHash = await hashPassword(newPassword);
+  await db.query(`UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2`, [newHash, user.id]);
+  await logAction({ actorId: user.id, action: "auth.password_changed", entityType: "user", entityId: user.id });
+
+  res.json({ message: "Password updated." });
 });
 
 module.exports = router;
