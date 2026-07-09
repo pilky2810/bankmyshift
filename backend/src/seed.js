@@ -4,14 +4,16 @@ const { pool } = require("./db");
 
 // Edit these before running `npm run seed` for your organisation.
 const FIRST_ADMIN = {
-  firstName: "Priya-Anne",
-  lastName: "Osei",
-  email: "priya-anne.osei@example.care",
-  phone: "07700 900100",
-  password: "ChangeMe123!", // the admin should change this on first login
+  firstName: "Lawrence",
+  lastName: "Pilkington",
+  email: "lawrence.pilkington@fhcsltd.co.uk",
+  phone: "077777777777",
+  password: "Willow-Marble-4430!", // the admin should change this on first login
   jobRole: "Rota Coordinator",
 };
 
+// NOTE: placeholder locations kept for the pilot per FHCS's instruction — replace
+// with real site names before wider rollout.
 const LOCATIONS = [
   { name: "Willowbrook House", region: "North" },
   { name: "Oakfield Lodge", region: "North" },
