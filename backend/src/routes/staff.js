@@ -11,11 +11,14 @@ router.use(requireAuth);
 
 const SAFE_FIELDS = `id, role, first_name, last_name, email, phone, job_role, pay_band, bank_approved, status, created_at, gender, has_driving_licence`;
 
-// GET /staff — manager/admin only: full directory, including each person's
-// current training records (needed so the manager UI can show/edit skills —
-// previously this endpoint left that out and only /staff/me had it).
+// GET /staff — manager/admin only: full directory for their own company, including
+// each person's current training records (needed so the manager UI can show/edit
+// skills — previously this endpoint left that out and only /staff/me had it).
 router.get("/", requireRole("manager", "admin"), async (req, res) => {
-  const { rows } = await db.query(`SELECT ${SAFE_FIELDS} FROM users WHERE role = 'staff' ORDER BY first_name`);
+  const { rows } = await db.query(
+    `SELECT ${SAFE_FIELDS} FROM users WHERE role = 'staff' AND company_id = $1 ORDER BY first_name`,
+    [req.user.companyId]
+  );
   const ids = rows.map((r) => r.id);
 
   let trainingByUser = {};
@@ -52,7 +55,7 @@ const newStaffInput = z.object({
   hasDrivingLicence: z.boolean().default(false),
 });
 
-// POST /staff — manager/admin creates a new staff account
+// POST /staff — manager/admin creates a new staff account in their own company
 router.post("/", requireRole("manager", "admin"), async (req, res) => {
   const parsed = newStaffInput.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
@@ -62,9 +65,9 @@ router.post("/", requireRole("manager", "admin"), async (req, res) => {
   let rows;
   try {
     ({ rows } = await db.query(
-      `INSERT INTO users (role, first_name, last_name, email, phone, job_role, pay_band, password_hash, bank_approved, status, gender, has_driving_licence)
-       VALUES ('staff', $1,$2,$3,$4,$5,$6,$7,false,'active',$8,$9) RETURNING ${SAFE_FIELDS}`,
-      [d.firstName, d.lastName, d.email, d.phone || null, d.jobRole || null, d.payBand || null, passwordHash, d.gender || null, d.hasDrivingLicence]
+      `INSERT INTO users (company_id, role, first_name, last_name, email, phone, job_role, pay_band, password_hash, bank_approved, status, gender, has_driving_licence)
+       VALUES ($1,'staff', $2,$3,$4,$5,$6,$7,$8,false,'active',$9,$10) RETURNING ${SAFE_FIELDS}`,
+      [req.user.companyId, d.firstName, d.lastName, d.email, d.phone || null, d.jobRole || null, d.payBand || null, passwordHash, d.gender || null, d.hasDrivingLicence]
     ));
   } catch (err) {
     // Postgres unique_violation — surface a clear message instead of the generic
@@ -85,8 +88,9 @@ router.post("/", requireRole("manager", "admin"), async (req, res) => {
 });
 
 // PATCH /staff/:id/details — manager/admin edits gender / driver status for an
-// existing staff member (added alongside shift requirements — accounts created
-// before this feature default to "not specified" / no driving licence until updated).
+// existing staff member in their own company (added alongside shift requirements —
+// accounts created before this feature default to "not specified" / no driving
+// licence until updated).
 router.patch("/:id/details", requireRole("manager", "admin"), async (req, res) => {
   const { id } = req.params;
   const { gender, hasDrivingLicence } = req.body || {};
@@ -94,32 +98,38 @@ router.patch("/:id/details", requireRole("manager", "admin"), async (req, res) =
     return res.status(400).json({ error: "gender must be 'male', 'female', or null." });
   }
   const { rows } = await db.query(
-    `UPDATE users SET gender = $1, has_driving_licence = $2, updated_at = now() WHERE id = $3 AND role = 'staff' RETURNING ${SAFE_FIELDS}`,
-    [gender || null, Boolean(hasDrivingLicence), id]
+    `UPDATE users SET gender = $1, has_driving_licence = $2, updated_at = now() WHERE id = $3 AND role = 'staff' AND company_id = $4 RETURNING ${SAFE_FIELDS}`,
+    [gender || null, Boolean(hasDrivingLicence), id, req.user.companyId]
   );
   if (!rows[0]) return res.status(404).json({ error: "Staff member not found." });
   await logAction({ actorId: req.user.id, action: "staff.details_updated", entityType: "user", entityId: id, metadata: { gender: gender || null, hasDrivingLicence: Boolean(hasDrivingLicence) } });
   res.json(rows[0]);
 });
 
-// PATCH /staff/:id/approval — toggle bank_approved
+// PATCH /staff/:id/approval — toggle bank_approved, scoped to the manager's own company
 router.patch("/:id/approval", requireRole("manager", "admin"), async (req, res) => {
   const { id } = req.params;
   const { bankApproved } = req.body || {};
   const { rows } = await db.query(
-    `UPDATE users SET bank_approved = $1, updated_at = now() WHERE id = $2 AND role = 'staff' RETURNING ${SAFE_FIELDS}`,
-    [Boolean(bankApproved), id]
+    `UPDATE users SET bank_approved = $1, updated_at = now() WHERE id = $2 AND role = 'staff' AND company_id = $3 RETURNING ${SAFE_FIELDS}`,
+    [Boolean(bankApproved), id, req.user.companyId]
   );
   if (!rows[0]) return res.status(404).json({ error: "Staff member not found." });
   await logAction({ actorId: req.user.id, action: "staff.approval_changed", entityType: "user", entityId: id, metadata: { bankApproved: Boolean(bankApproved) } });
   res.json(rows[0]);
 });
 
-// POST /staff/:id/training — manager/admin adds or updates a training record
+// POST /staff/:id/training — manager/admin adds or updates a training record.
+// Confirms the target staff member is in the manager's own company first —
+// otherwise a manager could add/remove training for another company's staff by
+// guessing an id, since training_records itself has no company_id column.
 router.post("/:id/training", requireRole("manager", "admin"), async (req, res) => {
   const { id } = req.params;
   const { trainingType, issuedDate, expiryDate, documentUrl } = req.body || {};
   if (!trainingType) return res.status(400).json({ error: "trainingType is required." });
+
+  const { rows: staffRows } = await db.query(`SELECT id FROM users WHERE id = $1 AND company_id = $2`, [id, req.user.companyId]);
+  if (!staffRows[0]) return res.status(404).json({ error: "Staff member not found." });
 
   const { rows } = await db.query(
     `INSERT INTO training_records (user_id, training_type, issued_date, expiry_date, document_url)
@@ -132,15 +142,18 @@ router.post("/:id/training", requireRole("manager", "admin"), async (req, res) =
 
 // DELETE /staff/:id/training/:trainingType — manager/admin removes a training record
 // (used when unticking a skill in the manager UI — e.g. a cert lapsed or was entered
-// by mistake).
+// by mistake). Same company check as above.
 router.delete("/:id/training/:trainingType", requireRole("manager", "admin"), async (req, res) => {
   const { id, trainingType } = req.params;
+  const { rows: staffRows } = await db.query(`SELECT id FROM users WHERE id = $1 AND company_id = $2`, [id, req.user.companyId]);
+  if (!staffRows[0]) return res.status(404).json({ error: "Staff member not found." });
+
   await db.query(`DELETE FROM training_records WHERE user_id = $1 AND training_type = $2`, [id, trainingType]);
   await logAction({ actorId: req.user.id, action: "staff.training_removed", entityType: "user", entityId: id, metadata: { trainingType } });
   res.json({ message: "Training record removed." });
 });
 
-// DELETE /staff/:id — manager/admin "removes" a staff member.
+// DELETE /staff/:id — manager/admin "removes" a staff member, scoped to their own company.
 // This deactivates the account (status = 'inactive') rather than deleting the row —
 // a hard delete would fail or silently break shift history, past claims, and the
 // audit log, all of which reference this user and need to stay intact for care-
@@ -151,8 +164,8 @@ router.delete("/:id/training/:trainingType", requireRole("manager", "admin"), as
 router.delete("/:id", requireRole("manager", "admin"), async (req, res) => {
   const { id } = req.params;
   const { rows } = await db.query(
-    `UPDATE users SET status = 'inactive', updated_at = now() WHERE id = $1 AND role = 'staff' RETURNING ${SAFE_FIELDS}`,
-    [id]
+    `UPDATE users SET status = 'inactive', updated_at = now() WHERE id = $1 AND role = 'staff' AND company_id = $2 RETURNING ${SAFE_FIELDS}`,
+    [id, req.user.companyId]
   );
   if (!rows[0]) return res.status(404).json({ error: "Staff member not found." });
   await logAction({ actorId: req.user.id, action: "staff.removed", entityType: "user", entityId: id });
@@ -163,8 +176,8 @@ router.delete("/:id", requireRole("manager", "admin"), async (req, res) => {
 router.post("/:id/restore", requireRole("manager", "admin"), async (req, res) => {
   const { id } = req.params;
   const { rows } = await db.query(
-    `UPDATE users SET status = 'active', updated_at = now() WHERE id = $1 AND role = 'staff' RETURNING ${SAFE_FIELDS}`,
-    [id]
+    `UPDATE users SET status = 'active', updated_at = now() WHERE id = $1 AND role = 'staff' AND company_id = $2 RETURNING ${SAFE_FIELDS}`,
+    [id, req.user.companyId]
   );
   if (!rows[0]) return res.status(404).json({ error: "Staff member not found." });
   await logAction({ actorId: req.user.id, action: "staff.restored", entityType: "user", entityId: id });

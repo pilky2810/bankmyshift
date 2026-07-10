@@ -15,30 +15,41 @@ router.use(authLimiter);
 
 function issueToken(user) {
   return jwt.sign(
-    { id: user.id, role: user.role, email: user.email },
+    { id: user.id, role: user.role, email: user.email, companyId: user.company_id, isSuperAdmin: user.is_super_admin },
     process.env.JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRES_IN || "12h" }
   );
 }
 
-// POST /auth/login
+// POST /auth/login  { companyCode, email, password }
+// Everyone signs in with their company's code alongside their usual email/password —
+// this keeps each organisation's staff clearly separated and stops someone accidentally
+// (or deliberately) signing into the wrong company. Since emails are unique across the
+// whole system, the company code isn't needed to find the account, but it's still
+// required and checked, so a mismatched code is treated the same as a wrong password.
 router.post("/login", async (req, res) => {
-  const { email: rawEmail, password } = req.body || {};
-  if (!rawEmail || !password) {
-    return res.status(400).json({ error: "Email and password are required." });
+  const { email: rawEmail, password, companyCode } = req.body || {};
+  if (!rawEmail || !password || !companyCode) {
+    return res.status(400).json({ error: "Company code, email, and password are required." });
   }
 
-  const { rows } = await db.query(`SELECT * FROM users WHERE email = $1`, [rawEmail]);
+  const { rows } = await db.query(
+    `SELECT u.*, c.name AS company_name, c.code AS company_code
+     FROM users u JOIN companies c ON c.id = u.company_id
+     WHERE u.email = $1 AND c.code = $2`,
+    [rawEmail, companyCode]
+  );
   const user = rows[0];
 
-  // Same generic error whether the email or password is wrong — don't reveal which.
+  // Same generic error whether the company code, email, or password is wrong —
+  // don't reveal which.
   if (!user || user.status !== "active") {
-    return res.status(401).json({ error: "Incorrect email or password." });
+    return res.status(401).json({ error: "Incorrect company code, email, or password." });
   }
 
   const valid = await verifyPassword(password, user.password_hash);
   if (!valid) {
-    return res.status(401).json({ error: "Incorrect email or password." });
+    return res.status(401).json({ error: "Incorrect company code, email, or password." });
   }
 
   const token = issueToken(user);
@@ -53,6 +64,9 @@ router.post("/login", async (req, res) => {
       lastName: user.last_name,
       email: user.email,
       bankApproved: user.bank_approved,
+      isSuperAdmin: user.is_super_admin,
+      companyName: user.company_name,
+      companyCode: user.company_code,
     },
   });
 });

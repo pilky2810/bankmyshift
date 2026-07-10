@@ -26,11 +26,13 @@ const shiftInput = z.object({
 });
 
 // GET /shifts?location=&serviceType=&minPay=&date=
-// Staff see only open shifts (plus their own claimed ones); managers see everything.
+// Always scoped to the signed-in user's company — staff see only open shifts
+// (plus their own claimed ones) within that company; managers see everything
+// within it, but never another company's shifts.
 router.get("/", async (req, res) => {
   const { location, serviceType, minPay, date } = req.query;
-  const conditions = [];
-  const params = [];
+  const conditions = ["company_id = $1"];
+  const params = [req.user.companyId];
 
   if (req.user.role === "staff") {
     conditions.push(`(status = 'open' OR claimed_by = $${params.length + 1})`);
@@ -41,36 +43,39 @@ router.get("/", async (req, res) => {
   if (minPay) { params.push(Number(minPay)); conditions.push(`pay_rate >= $${params.length}`); }
   if (date) { params.push(date); conditions.push(`date = $${params.length}`); }
 
-  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const where = `WHERE ${conditions.join(" AND ")}`;
   const { rows } = await db.query(`SELECT * FROM shifts ${where} ORDER BY date, start_time`, params);
   res.json(rows);
 });
 
-// POST /shifts — managers/admins only
+// POST /shifts — managers/admins only, always created in their own company
 router.post("/", requireRole("manager", "admin"), async (req, res) => {
   const parsed = shiftInput.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
 
   const d = parsed.data;
   const { rows } = await db.query(
-    `INSERT INTO shifts (created_by, location_name, date, start_time, end_time, service_type, pay_rate, required_skills, notes, mileage_note, approval_required, client_ref, driver_required, required_gender, status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'open') RETURNING *`,
-    [req.user.id, d.location_name, d.date, d.start_time, d.end_time, d.service_type, d.pay_rate, d.required_skills, d.notes || null, d.mileage_note || null, d.approval_required, d.client_ref || null, d.driver_required, d.required_gender || null]
+    `INSERT INTO shifts (created_by, company_id, location_name, date, start_time, end_time, service_type, pay_rate, required_skills, notes, mileage_note, approval_required, client_ref, driver_required, required_gender, status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'open') RETURNING *`,
+    [req.user.id, req.user.companyId, d.location_name, d.date, d.start_time, d.end_time, d.service_type, d.pay_rate, d.required_skills, d.notes || null, d.mileage_note || null, d.approval_required, d.client_ref || null, d.driver_required, d.required_gender || null]
   );
   const shift = rows[0];
   await logAction({ actorId: req.user.id, action: "shift.created", entityType: "shift", entityId: shift.id, metadata: d });
 
-  // Notify all bank-approved staff who could plausibly cover it.
-  const { rows: staffRows } = await db.query(`SELECT id FROM users WHERE role = 'staff' AND bank_approved = true AND status = 'active'`);
+  // Notify all bank-approved staff in the same company who could plausibly cover it.
+  const { rows: staffRows } = await db.query(
+    `SELECT id FROM users WHERE role = 'staff' AND bank_approved = true AND status = 'active' AND company_id = $1`,
+    [req.user.companyId]
+  );
   await notificationService.notifyNewShift(shift, staffRows.map((s) => s.id));
 
   res.status(201).json(shift);
 });
 
-// POST /shifts/:id/claim — staff only
+// POST /shifts/:id/claim — staff only, and only within their own company
 router.post("/:id/claim", requireRole("staff"), async (req, res) => {
   const { id } = req.params;
-  const { rows } = await db.query(`SELECT * FROM shifts WHERE id = $1`, [id]);
+  const { rows } = await db.query(`SELECT * FROM shifts WHERE id = $1 AND company_id = $2`, [id, req.user.companyId]);
   const shift = rows[0];
   if (!shift) return res.status(404).json({ error: "Shift not found." });
   if (shift.status !== "open") return res.status(409).json({ error: "This shift is no longer available." });
@@ -135,7 +140,10 @@ router.post("/:id/claim", requireRole("staff"), async (req, res) => {
 // POST /shifts/:id/cancel-claim — staff cancelling their own claim
 router.post("/:id/cancel-claim", requireRole("staff"), async (req, res) => {
   const { id } = req.params;
-  const { rows } = await db.query(`SELECT * FROM shifts WHERE id = $1 AND claimed_by = $2`, [id, req.user.id]);
+  const { rows } = await db.query(
+    `SELECT * FROM shifts WHERE id = $1 AND claimed_by = $2 AND company_id = $3`,
+    [id, req.user.id, req.user.companyId]
+  );
   const shift = rows[0];
   if (!shift) return res.status(404).json({ error: "Claim not found." });
 
@@ -154,7 +162,10 @@ router.post("/:id/decide", requireRole("manager", "admin"), async (req, res) => 
     return res.status(400).json({ error: "decision must be 'approved' or 'rejected'." });
   }
 
-  const { rows } = await db.query(`SELECT * FROM shifts WHERE id = $1 AND status = 'pending'`, [id]);
+  const { rows } = await db.query(
+    `SELECT * FROM shifts WHERE id = $1 AND status = 'pending' AND company_id = $2`,
+    [id, req.user.companyId]
+  );
   const shift = rows[0];
   if (!shift) return res.status(404).json({ error: "No pending request found for this shift." });
 
@@ -184,7 +195,7 @@ router.post("/:id/decide", requireRole("manager", "admin"), async (req, res) => 
 // Remembers the prior status in previous_status so it can be undone via /reinstate.
 router.post("/:id/cancel", requireRole("manager", "admin"), async (req, res) => {
   const { id } = req.params;
-  const { rows } = await db.query(`SELECT * FROM shifts WHERE id = $1`, [id]);
+  const { rows } = await db.query(`SELECT * FROM shifts WHERE id = $1 AND company_id = $2`, [id, req.user.companyId]);
   const shift = rows[0];
   if (!shift) return res.status(404).json({ error: "Shift not found." });
   if (shift.status === "cancelled") return res.status(409).json({ error: "This shift is already cancelled." });
@@ -206,7 +217,7 @@ router.post("/:id/cancel", requireRole("manager", "admin"), async (req, res) => 
 // the exact status (open/pending/confirmed) it had before cancelling.
 router.post("/:id/reinstate", requireRole("manager", "admin"), async (req, res) => {
   const { id } = req.params;
-  const { rows } = await db.query(`SELECT * FROM shifts WHERE id = $1`, [id]);
+  const { rows } = await db.query(`SELECT * FROM shifts WHERE id = $1 AND company_id = $2`, [id, req.user.companyId]);
   const shift = rows[0];
   if (!shift) return res.status(404).json({ error: "Shift not found." });
   if (shift.status !== "cancelled") return res.status(409).json({ error: "Only a cancelled shift can be reinstated." });
@@ -232,7 +243,10 @@ router.post("/:id/reinstate", requireRole("manager", "admin"), async (req, res) 
 // withdrawn instantly via /cancel-claim — nothing's been committed to yet there.)
 router.post("/:id/handback", requireRole("staff"), async (req, res) => {
   const { id } = req.params;
-  const { rows } = await db.query(`SELECT * FROM shifts WHERE id = $1 AND claimed_by = $2`, [id, req.user.id]);
+  const { rows } = await db.query(
+    `SELECT * FROM shifts WHERE id = $1 AND claimed_by = $2 AND company_id = $3`,
+    [id, req.user.id, req.user.companyId]
+  );
   const shift = rows[0];
   if (!shift) return res.status(404).json({ error: "Claim not found." });
   if (shift.status !== "confirmed") {
@@ -245,7 +259,10 @@ router.post("/:id/handback", requireRole("staff"), async (req, res) => {
   );
   await logAction({ actorId: req.user.id, action: "shift.handback_requested", entityType: "shift", entityId: id });
 
-  const { rows: managerRows } = await db.query(`SELECT id FROM users WHERE role IN ('manager', 'admin') AND status = 'active'`);
+  const { rows: managerRows } = await db.query(
+    `SELECT id FROM users WHERE role IN ('manager', 'admin') AND status = 'active' AND company_id = $1`,
+    [req.user.companyId]
+  );
   await notificationService.notifyHandbackRequested(updated[0], managerRows.map((m) => m.id), req.user.id);
 
   res.json(updated[0]);
@@ -259,7 +276,10 @@ router.post("/:id/handback/decide", requireRole("manager", "admin"), async (req,
     return res.status(400).json({ error: "decision must be 'approved' or 'rejected'." });
   }
 
-  const { rows } = await db.query(`SELECT * FROM shifts WHERE id = $1 AND status = 'handback_requested'`, [id]);
+  const { rows } = await db.query(
+    `SELECT * FROM shifts WHERE id = $1 AND status = 'handback_requested' AND company_id = $2`,
+    [id, req.user.companyId]
+  );
   const shift = rows[0];
   if (!shift) return res.status(404).json({ error: "No pending hand-back request found for this shift." });
 
