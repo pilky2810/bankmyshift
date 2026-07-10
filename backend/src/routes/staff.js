@@ -123,4 +123,35 @@ router.delete("/:id/training/:trainingType", requireRole("manager", "admin"), as
   res.json({ message: "Training record removed." });
 });
 
+// DELETE /staff/:id — manager/admin "removes" a staff member.
+// This deactivates the account (status = 'inactive') rather than deleting the row —
+// a hard delete would fail or silently break shift history, past claims, and the
+// audit log, all of which reference this user and need to stay intact for care-
+// record/compliance purposes. A removed account can't log in (see auth.js login,
+// which already requires status = 'active') and drops out of the active staff
+// directory, but nothing about their history is lost — and it can be undone via
+// POST /staff/:id/restore.
+router.delete("/:id", requireRole("manager", "admin"), async (req, res) => {
+  const { id } = req.params;
+  const { rows } = await db.query(
+    `UPDATE users SET status = 'inactive', updated_at = now() WHERE id = $1 AND role = 'staff' RETURNING ${SAFE_FIELDS}`,
+    [id]
+  );
+  if (!rows[0]) return res.status(404).json({ error: "Staff member not found." });
+  await logAction({ actorId: req.user.id, action: "staff.removed", entityType: "user", entityId: id });
+  res.json(rows[0]);
+});
+
+// POST /staff/:id/restore — manager/admin undoes a removal, reactivating the account.
+router.post("/:id/restore", requireRole("manager", "admin"), async (req, res) => {
+  const { id } = req.params;
+  const { rows } = await db.query(
+    `UPDATE users SET status = 'active', updated_at = now() WHERE id = $1 AND role = 'staff' RETURNING ${SAFE_FIELDS}`,
+    [id]
+  );
+  if (!rows[0]) return res.status(404).json({ error: "Staff member not found." });
+  await logAction({ actorId: req.user.id, action: "staff.restored", entityType: "user", entityId: id });
+  res.json(rows[0]);
+});
+
 module.exports = router;
