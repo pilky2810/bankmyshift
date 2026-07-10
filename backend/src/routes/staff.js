@@ -59,15 +59,25 @@ router.post("/", requireRole("manager", "admin"), async (req, res) => {
   const d = parsed.data;
 
   const passwordHash = await hashPassword(d.temporaryPassword);
-  const { rows } = await db.query(
-    `INSERT INTO users (role, first_name, last_name, email, phone, job_role, pay_band, password_hash, bank_approved, status, gender, has_driving_licence)
-     VALUES ('staff', $1,$2,$3,$4,$5,$6,$7,false,'active',$8,$9) RETURNING ${SAFE_FIELDS}`,
-    [d.firstName, d.lastName, d.email, d.phone || null, d.jobRole || null, d.payBand || null, passwordHash, d.gender || null, d.hasDrivingLicence]
-  );
+  let rows;
+  try {
+    ({ rows } = await db.query(
+      `INSERT INTO users (role, first_name, last_name, email, phone, job_role, pay_band, password_hash, bank_approved, status, gender, has_driving_licence)
+       VALUES ('staff', $1,$2,$3,$4,$5,$6,$7,false,'active',$8,$9) RETURNING ${SAFE_FIELDS}`,
+      [d.firstName, d.lastName, d.email, d.phone || null, d.jobRole || null, d.payBand || null, passwordHash, d.gender || null, d.hasDrivingLicence]
+    ));
+  } catch (err) {
+    // Postgres unique_violation — surface a clear message instead of the generic
+    // 500 the central error handler would otherwise return.
+    if (err.code === "23505") {
+      return res.status(409).json({ error: "An account with this email address already exists." });
+    }
+    throw err;
+  }
   await logAction({ actorId: req.user.id, action: "staff.created", entityType: "user", entityId: rows[0].id });
 
   // Emails their temp password + a nudge to change it. This is a no-op (just logs a
-  // warning) until SENDGRID_API_KEY/EMAIL_FROM are set — see emailService.js — so
+  // warning) until BREVO_API_KEY/EMAIL_FROM are set — see emailService.js — so
   // account creation always succeeds even if email isn't configured yet.
   await email.sendWelcomeEmail(rows[0].email, rows[0].first_name, d.temporaryPassword);
 
