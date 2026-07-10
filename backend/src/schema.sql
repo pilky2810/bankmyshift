@@ -6,7 +6,7 @@ CREATE EXTENSION IF NOT EXISTS "citext";   -- for case-insensitive email matchin
 
 CREATE TYPE user_role AS ENUM ('staff', 'manager', 'admin');
 CREATE TYPE user_status AS ENUM ('active', 'inactive', 'suspended');
-CREATE TYPE shift_status AS ENUM ('open', 'pending', 'confirmed', 'completed', 'cancelled', 'no_show');
+CREATE TYPE shift_status AS ENUM ('open', 'pending', 'confirmed', 'completed', 'cancelled', 'no_show', 'handback_requested');
 CREATE TYPE claim_status AS ENUM ('pending', 'approved', 'rejected', 'cancelled');
 CREATE TYPE notif_channel AS ENUM ('in_app', 'email', 'sms', 'push');
 
@@ -30,6 +30,8 @@ CREATE TABLE users (
   pay_band TEXT,
   bank_approved BOOLEAN NOT NULL DEFAULT false,
   status user_status NOT NULL DEFAULT 'active',
+  gender TEXT, -- nullable/free text; used only for shift gender requirements, not required
+  has_driving_licence BOOLEAN NOT NULL DEFAULT false,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -80,7 +82,10 @@ CREATE TABLE shifts (
   notes TEXT,
   mileage_note TEXT,
   approval_required BOOLEAN NOT NULL DEFAULT false,
+  driver_required BOOLEAN NOT NULL DEFAULT false,
+  required_gender TEXT, -- nullable; 'male' or 'female' when a manager sets one, see compliance guide
   status shift_status NOT NULL DEFAULT 'open',
+  previous_status shift_status, -- set when cancelled or a hand-back is requested, so it can be restored
   claimed_by UUID REFERENCES users(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
