@@ -180,21 +180,111 @@ router.post("/:id/decide", requireRole("manager", "admin"), async (req, res) => 
   res.json(updated[0]);
 });
 
-// POST /shifts/:id/cancel — manager/admin cancelling a shift outright
+// POST /shifts/:id/cancel — manager/admin cancelling a shift outright.
+// Remembers the prior status in previous_status so it can be undone via /reinstate.
 router.post("/:id/cancel", requireRole("manager", "admin"), async (req, res) => {
   const { id } = req.params;
   const { rows } = await db.query(`SELECT * FROM shifts WHERE id = $1`, [id]);
   const shift = rows[0];
   if (!shift) return res.status(404).json({ error: "Shift not found." });
+  if (shift.status === "cancelled") return res.status(409).json({ error: "This shift is already cancelled." });
 
-  await db.query(`UPDATE shifts SET status = 'cancelled', updated_at = now() WHERE id = $1`, [id]);
+  const { rows: updated } = await db.query(
+    `UPDATE shifts SET status = 'cancelled', previous_status = status, updated_at = now() WHERE id = $1 RETURNING *`,
+    [id]
+  );
   await logAction({ actorId: req.user.id, action: "shift.cancelled", entityType: "shift", entityId: id });
 
   if (shift.claimed_by) {
     await notificationService.notifyShiftCancelled(shift, shift.claimed_by);
   }
 
-  res.json({ message: "Shift cancelled." });
+  res.json(updated[0]);
+});
+
+// POST /shifts/:id/reinstate — manager/admin undoes a cancellation, restoring
+// the exact status (open/pending/confirmed) it had before cancelling.
+router.post("/:id/reinstate", requireRole("manager", "admin"), async (req, res) => {
+  const { id } = req.params;
+  const { rows } = await db.query(`SELECT * FROM shifts WHERE id = $1`, [id]);
+  const shift = rows[0];
+  if (!shift) return res.status(404).json({ error: "Shift not found." });
+  if (shift.status !== "cancelled") return res.status(409).json({ error: "Only a cancelled shift can be reinstated." });
+
+  const restoredStatus = shift.previous_status || "open";
+  const { rows: updated } = await db.query(
+    `UPDATE shifts SET status = $1, previous_status = NULL, updated_at = now() WHERE id = $2 RETURNING *`,
+    [restoredStatus, id]
+  );
+  await logAction({ actorId: req.user.id, action: "shift.reinstated", entityType: "shift", entityId: id, metadata: { restoredStatus } });
+
+  if (updated[0].claimed_by) {
+    await notificationService.notifyShiftReinstated(updated[0], updated[0].claimed_by);
+  }
+
+  res.json(updated[0]);
+});
+
+// POST /shifts/:id/handback — staff requests to hand back a shift they're
+// already confirmed for. Doesn't release it immediately — goes to the manager's
+// Approvals tab for a decision, same review pattern as claiming an
+// approval-required shift. (A still-pending, not-yet-approved claim can still be
+// withdrawn instantly via /cancel-claim — nothing's been committed to yet there.)
+router.post("/:id/handback", requireRole("staff"), async (req, res) => {
+  const { id } = req.params;
+  const { rows } = await db.query(`SELECT * FROM shifts WHERE id = $1 AND claimed_by = $2`, [id, req.user.id]);
+  const shift = rows[0];
+  if (!shift) return res.status(404).json({ error: "Claim not found." });
+  if (shift.status !== "confirmed") {
+    return res.status(409).json({ error: "Only a confirmed shift can be handed back for review." });
+  }
+
+  const { rows: updated } = await db.query(
+    `UPDATE shifts SET status = 'handback_requested', previous_status = status, updated_at = now() WHERE id = $1 RETURNING *`,
+    [id]
+  );
+  await logAction({ actorId: req.user.id, action: "shift.handback_requested", entityType: "shift", entityId: id });
+
+  const { rows: managerRows } = await db.query(`SELECT id FROM users WHERE role IN ('manager', 'admin') AND status = 'active'`);
+  await notificationService.notifyHandbackRequested(updated[0], managerRows.map((m) => m.id), req.user.id);
+
+  res.json(updated[0]);
+});
+
+// POST /shifts/:id/handback/decide  { decision: 'approved' | 'rejected' } — manager/admin
+router.post("/:id/handback/decide", requireRole("manager", "admin"), async (req, res) => {
+  const { id } = req.params;
+  const { decision } = req.body || {};
+  if (!["approved", "rejected"].includes(decision)) {
+    return res.status(400).json({ error: "decision must be 'approved' or 'rejected'." });
+  }
+
+  const { rows } = await db.query(`SELECT * FROM shifts WHERE id = $1 AND status = 'handback_requested'`, [id]);
+  const shift = rows[0];
+  if (!shift) return res.status(404).json({ error: "No pending hand-back request found for this shift." });
+
+  if (decision === "approved") {
+    const { rows: updated } = await db.query(
+      `UPDATE shifts SET status = 'open', claimed_by = NULL, previous_status = NULL, updated_at = now() WHERE id = $1 RETURNING *`,
+      [id]
+    );
+    await db.query(
+      `UPDATE shift_claims SET status = 'cancelled' WHERE shift_id = $1 AND user_id = $2 AND status = 'approved'`,
+      [id, shift.claimed_by]
+    );
+    await logAction({ actorId: req.user.id, action: "shift.handback_approved", entityType: "shift", entityId: id });
+    await notificationService.notifyHandbackApproved(updated[0], shift.claimed_by);
+    res.json(updated[0]);
+  } else {
+    const restoredStatus = shift.previous_status || "confirmed";
+    const { rows: updated } = await db.query(
+      `UPDATE shifts SET status = $1, previous_status = NULL, updated_at = now() WHERE id = $2 RETURNING *`,
+      [restoredStatus, id]
+    );
+    await logAction({ actorId: req.user.id, action: "shift.handback_denied", entityType: "shift", entityId: id });
+    await notificationService.notifyHandbackDenied(updated[0], shift.claimed_by);
+    res.json(updated[0]);
+  }
 });
 
 module.exports = router;
