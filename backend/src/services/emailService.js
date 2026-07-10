@@ -43,6 +43,22 @@ const templates = {
     subject: `Reminder — your shift starts soon`,
     text: `Hi ${name},\n\nJust a reminder: your shift at ${shift.location_name} starts on ${shift.date} at ${shift.start_time}.`,
   }),
+  shiftReinstated: (name, shift) => ({
+    subject: `Shift reinstated — ${shift.location_name}`,
+    text: `Hi ${name},\n\nYour shift at ${shift.location_name} on ${shift.date}, ${shift.start_time}–${shift.end_time} has been reinstated after being cancelled.`,
+  }),
+  handbackRequested: (name, shift, requesterName) => ({
+    subject: `Hand-back request — ${shift.location_name}`,
+    text: `Hi ${name},\n\n${requesterName || "A staff member"} has asked to hand back the shift at ${shift.location_name} on ${shift.date}, ${shift.start_time}–${shift.end_time}. Review it in the app's Approvals tab.`,
+  }),
+  handbackApproved: (name, shift) => ({
+    subject: `Hand-back approved — ${shift.location_name}`,
+    text: `Hi ${name},\n\nYour request to hand back the shift at ${shift.location_name} on ${shift.date} was approved. You're no longer scheduled for this shift.`,
+  }),
+  handbackDenied: (name, shift) => ({
+    subject: `Hand-back request declined — ${shift.location_name}`,
+    text: `Hi ${name},\n\nYour request to hand back the shift at ${shift.location_name} on ${shift.date} wasn't approved. You're still confirmed for this shift.`,
+  }),
 };
 
 module.exports = {
@@ -52,4 +68,8 @@ module.exports = {
   sendClaimRejectedEmail: (to, name, shift) => send({ to, ...templates.claimRejected(name, shift) }),
   sendShiftCancelledEmail: (to, name, shift) => send({ to, ...templates.shiftCancelled(name, shift) }),
   sendReminderEmail: (to, name, shift) => send({ to, ...templates.reminder(name, shift) }),
+  sendShiftReinstatedEmail: (to, name, shift) => send({ to, ...templates.shiftReinstated(name, shift) }),
+  sendHandbackRequestedEmail: (to, name, shift, requesterName) => send({ to, ...templates.handbackRequested(name, shift, requesterName) }),
+  sendHandbackApprovedEmail: (to, name, shift) => send({ to, ...templates.handbackApproved(name, shift) }),
+  sendHandbackDeniedEmail: (to, name, shift) => send({ to, ...templates.handbackDenied(name, shift) }),
 };
