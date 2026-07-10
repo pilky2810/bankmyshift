@@ -10,6 +10,15 @@ CREATE TYPE shift_status AS ENUM ('open', 'pending', 'confirmed', 'completed', '
 CREATE TYPE claim_status AS ENUM ('pending', 'approved', 'rejected', 'cancelled');
 CREATE TYPE notif_channel AS ENUM ('in_app', 'email', 'sms', 'push');
 
+-- Each customer organisation using the app (e.g. Frank House Care Services).
+-- `code` is what everyone types at login (e.g. "fhcs") — lowercase, short, memorable.
+CREATE TABLE companies (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  code CITEXT UNIQUE NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE locations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
@@ -20,10 +29,15 @@ CREATE TABLE locations (
 
 CREATE TABLE users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id UUID NOT NULL REFERENCES companies(id),
   role user_role NOT NULL DEFAULT 'staff',
+  -- Platform-level admin (not tied to any one company's data) who can create and
+  -- manage companies from the "Companies" screen. Nearly everyone is false here —
+  -- normal admins/managers/staff are scoped entirely to their own company_id.
+  is_super_admin BOOLEAN NOT NULL DEFAULT false,
   first_name TEXT NOT NULL,
   last_name TEXT NOT NULL,
-  email CITEXT UNIQUE NOT NULL,
+  email CITEXT UNIQUE NOT NULL, -- unique across the whole system, not just per company
   phone TEXT,
   password_hash TEXT NOT NULL,
   job_role TEXT,
@@ -35,6 +49,8 @@ CREATE TABLE users (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE INDEX idx_users_company ON users(company_id);
 
 -- Password reset codes (short-lived, single use)
 CREATE TABLE password_resets (
@@ -70,6 +86,7 @@ CREATE TABLE staff_availability (
 CREATE TABLE shifts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   created_by UUID NOT NULL REFERENCES users(id),
+  company_id UUID NOT NULL REFERENCES companies(id),
   location_id UUID REFERENCES locations(id),
   location_name TEXT NOT NULL, -- denormalised for fast filtering
   date DATE NOT NULL,
@@ -95,6 +112,7 @@ CREATE INDEX idx_shifts_date ON shifts(date);
 CREATE INDEX idx_shifts_status ON shifts(status);
 CREATE INDEX idx_shifts_location ON shifts(location_name);
 CREATE INDEX idx_shifts_claimed_by ON shifts(claimed_by);
+CREATE INDEX idx_shifts_company ON shifts(company_id);
 
 CREATE TABLE shift_claims (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

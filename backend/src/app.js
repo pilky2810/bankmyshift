@@ -7,6 +7,7 @@ const authRoutes = require("./routes/auth");
 const shiftRoutes = require("./routes/shifts");
 const staffRoutes = require("./routes/staff");
 const notificationRoutes = require("./routes/notifications");
+const companyRoutes = require("./routes/companies");
 
 const app = express();
 
@@ -28,6 +29,7 @@ app.use("/auth", authRoutes);
 app.use("/shifts", shiftRoutes);
 app.use("/staff", staffRoutes);
 app.use("/notifications", notificationRoutes);
+app.use("/companies", companyRoutes);
 
 // Central error handler — keeps stack traces out of API responses.
 app.use((err, req, res, next) => {

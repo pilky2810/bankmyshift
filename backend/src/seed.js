@@ -3,6 +3,11 @@ const bcrypt = require("bcrypt");
 const { pool } = require("./db");
 
 // Edit these before running `npm run seed` for your organisation.
+const FIRST_COMPANY = {
+  name: "Frank House Care Services",
+  code: "fhcs", // what everyone types at login, alongside their email + password
+};
+
 const FIRST_ADMIN = {
   firstName: "Lawrence",
   lastName: "Pilkington",
@@ -45,22 +50,32 @@ const LOCATIONS = [
 ];
 
 async function seed() {
+  await pool.query(
+    `INSERT INTO companies (name, code) VALUES ($1, $2) ON CONFLICT (code) DO NOTHING`,
+    [FIRST_COMPANY.name, FIRST_COMPANY.code]
+  );
+  const { rows: companyRows } = await pool.query(`SELECT id FROM companies WHERE code = $1`, [FIRST_COMPANY.code]);
+  const companyId = companyRows[0].id;
+  console.log(`Company ready: ${FIRST_COMPANY.name} (code: ${FIRST_COMPANY.code})`);
+
   const passwordHash = await bcrypt.hash(FIRST_ADMIN.password, 12);
 
+  // is_super_admin = true — the first admin can also create further companies
+  // from the "Companies" screen, on top of managing their own company as normal.
   await pool.query(
-    `INSERT INTO users (role, first_name, last_name, email, phone, password_hash, job_role, bank_approved, status)
-     VALUES ('admin', $1, $2, $3, $4, $5, $6, true, 'active')
+    `INSERT INTO users (company_id, role, is_super_admin, first_name, last_name, email, phone, password_hash, job_role, bank_approved, status)
+     VALUES ($1, 'admin', true, $2, $3, $4, $5, $6, $7, true, 'active')
      ON CONFLICT (email) DO NOTHING`,
-    [FIRST_ADMIN.firstName, FIRST_ADMIN.lastName, FIRST_ADMIN.email, FIRST_ADMIN.phone, passwordHash, FIRST_ADMIN.jobRole]
+    [companyId, FIRST_ADMIN.firstName, FIRST_ADMIN.lastName, FIRST_ADMIN.email, FIRST_ADMIN.phone, passwordHash, FIRST_ADMIN.jobRole]
   );
 
   for (const mgr of MANAGERS) {
     const mgrHash = await bcrypt.hash(mgr.password, 12);
     await pool.query(
-      `INSERT INTO users (role, first_name, last_name, email, phone, password_hash, job_role, bank_approved, status)
-       VALUES ('manager', $1, $2, $3, $4, $5, $6, true, 'active')
+      `INSERT INTO users (company_id, role, first_name, last_name, email, phone, password_hash, job_role, bank_approved, status)
+       VALUES ($1, 'manager', $2, $3, $4, $5, $6, $7, true, 'active')
        ON CONFLICT (email) DO NOTHING`,
-      [mgr.firstName, mgr.lastName, mgr.email, mgr.phone, mgrHash, mgr.jobRole]
+      [companyId, mgr.firstName, mgr.lastName, mgr.email, mgr.phone, mgrHash, mgr.jobRole]
     );
     console.log(`Seeded manager: ${mgr.email} / ${mgr.password}`);
   }
@@ -73,7 +88,7 @@ async function seed() {
     );
   }
 
-  console.log(`Seed complete. First admin login: ${FIRST_ADMIN.email} / ${FIRST_ADMIN.password}`);
+  console.log(`Seed complete. First admin login: company code "${FIRST_COMPANY.code}", ${FIRST_ADMIN.email} / ${FIRST_ADMIN.password}`);
   console.log("Change this password immediately after first login.");
   await pool.end();
 }
