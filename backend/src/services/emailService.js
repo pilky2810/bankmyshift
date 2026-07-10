@@ -1,20 +1,37 @@
-const sgMail = require("@sendgrid/mail");
-
-if (process.env.SENDGRID_API_KEY) {
-  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
-}
+// Sends via Brevo's transactional email REST API directly (no SDK dependency —
+// just Node's built-in fetch), since it's a single simple POST. Switched from
+// SendGrid because SendGrid kept flagging/banning this account during setup.
+const BREVO_API_URL = "https://api.brevo.com/v3/smtp/email";
 
 async function send({ to, subject, text, html }) {
-  if (!process.env.SENDGRID_API_KEY) {
+  if (!process.env.BREVO_API_KEY) {
     // Fails loudly in dev rather than silently pretending to send — flip this
-    // on in your hosting provider's env vars once you have a SendGrid account.
-    console.warn(`[emailService] SENDGRID_API_KEY not set — would have sent "${subject}" to ${to}`);
+    // on in your hosting provider's env vars once you have a Brevo account.
+    console.warn(`[emailService] BREVO_API_KEY not set — would have sent "${subject}" to ${to}`);
     return;
   }
   try {
-    await sgMail.send({ to, from: process.env.EMAIL_FROM, subject, text, html: html || text });
+    const res = await fetch(BREVO_API_URL, {
+      method: "POST",
+      headers: {
+        "api-key": process.env.BREVO_API_KEY,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        sender: { email: process.env.EMAIL_FROM, name: process.env.EMAIL_FROM_NAME || "Bank My Shift" },
+        to: [{ email: to }],
+        subject,
+        textContent: text,
+        htmlContent: html || text,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.error(`Failed to send email to ${to}: ${res.status} ${body}`);
+    }
   } catch (err) {
-    console.error(`Failed to send email to ${to}:`, err.response?.body || err.message);
+    console.error(`Failed to send email to ${to}:`, err.message);
   }
 }
 
