@@ -8,7 +8,7 @@ const { hashPassword } = require("../utils/password");
 const router = express.Router();
 router.use(requireAuth);
 
-const SAFE_FIELDS = `id, role, first_name, last_name, email, phone, job_role, pay_band, bank_approved, status, created_at`;
+const SAFE_FIELDS = `id, role, first_name, last_name, email, phone, job_role, pay_band, bank_approved, status, created_at, gender, has_driving_licence`;
 
 // GET /staff — manager/admin only: full directory, including each person's
 // current training records (needed so the manager UI can show/edit skills —
@@ -47,6 +47,8 @@ const newStaffInput = z.object({
   jobRole: z.string().optional(),
   payBand: z.string().optional(),
   temporaryPassword: z.string().min(8),
+  gender: z.enum(["male", "female"]).optional().nullable(),
+  hasDrivingLicence: z.boolean().default(false),
 });
 
 // POST /staff — manager/admin creates a new staff account
@@ -57,12 +59,30 @@ router.post("/", requireRole("manager", "admin"), async (req, res) => {
 
   const passwordHash = await hashPassword(d.temporaryPassword);
   const { rows } = await db.query(
-    `INSERT INTO users (role, first_name, last_name, email, phone, job_role, pay_band, password_hash, bank_approved, status)
-     VALUES ('staff', $1,$2,$3,$4,$5,$6,$7,false,'active') RETURNING ${SAFE_FIELDS}`,
-    [d.firstName, d.lastName, d.email, d.phone || null, d.jobRole || null, d.payBand || null, passwordHash]
+    `INSERT INTO users (role, first_name, last_name, email, phone, job_role, pay_band, password_hash, bank_approved, status, gender, has_driving_licence)
+     VALUES ('staff', $1,$2,$3,$4,$5,$6,$7,false,'active',$8,$9) RETURNING ${SAFE_FIELDS}`,
+    [d.firstName, d.lastName, d.email, d.phone || null, d.jobRole || null, d.payBand || null, passwordHash, d.gender || null, d.hasDrivingLicence]
   );
   await logAction({ actorId: req.user.id, action: "staff.created", entityType: "user", entityId: rows[0].id });
   res.status(201).json(rows[0]);
+});
+
+// PATCH /staff/:id/details — manager/admin edits gender / driver status for an
+// existing staff member (added alongside shift requirements — accounts created
+// before this feature default to "not specified" / no driving licence until updated).
+router.patch("/:id/details", requireRole("manager", "admin"), async (req, res) => {
+  const { id } = req.params;
+  const { gender, hasDrivingLicence } = req.body || {};
+  if (gender !== null && gender !== undefined && !["male", "female"].includes(gender)) {
+    return res.status(400).json({ error: "gender must be 'male', 'female', or null." });
+  }
+  const { rows } = await db.query(
+    `UPDATE users SET gender = $1, has_driving_licence = $2, updated_at = now() WHERE id = $3 AND role = 'staff' RETURNING ${SAFE_FIELDS}`,
+    [gender || null, Boolean(hasDrivingLicence), id]
+  );
+  if (!rows[0]) return res.status(404).json({ error: "Staff member not found." });
+  await logAction({ actorId: req.user.id, action: "staff.details_updated", entityType: "user", entityId: id, metadata: { gender: gender || null, hasDrivingLicence: Boolean(hasDrivingLicence) } });
+  res.json(rows[0]);
 });
 
 // PATCH /staff/:id/approval — toggle bank_approved

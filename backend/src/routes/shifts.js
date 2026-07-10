@@ -20,6 +20,9 @@ const shiftInput = z.object({
   mileage_note: z.string().optional(),
   approval_required: z.boolean().default(false),
   client_ref: z.string().optional(),
+  driver_required: z.boolean().default(false),
+  // null/omitted = no gender requirement on this shift.
+  required_gender: z.enum(["male", "female"]).optional().nullable(),
 });
 
 // GET /shifts?location=&serviceType=&minPay=&date=
@@ -50,9 +53,9 @@ router.post("/", requireRole("manager", "admin"), async (req, res) => {
 
   const d = parsed.data;
   const { rows } = await db.query(
-    `INSERT INTO shifts (created_by, location_name, date, start_time, end_time, service_type, pay_rate, required_skills, notes, mileage_note, approval_required, client_ref, status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'open') RETURNING *`,
-    [req.user.id, d.location_name, d.date, d.start_time, d.end_time, d.service_type, d.pay_rate, d.required_skills, d.notes || null, d.mileage_note || null, d.approval_required, d.client_ref || null]
+    `INSERT INTO shifts (created_by, location_name, date, start_time, end_time, service_type, pay_rate, required_skills, notes, mileage_note, approval_required, client_ref, driver_required, required_gender, status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'open') RETURNING *`,
+    [req.user.id, d.location_name, d.date, d.start_time, d.end_time, d.service_type, d.pay_rate, d.required_skills, d.notes || null, d.mileage_note || null, d.approval_required, d.client_ref || null, d.driver_required, d.required_gender || null]
   );
   const shift = rows[0];
   await logAction({ actorId: req.user.id, action: "shift.created", entityType: "shift", entityId: shift.id, metadata: d });
@@ -75,6 +78,18 @@ router.post("/:id/claim", requireRole("staff"), async (req, res) => {
   const { rows: userRows } = await db.query(`SELECT * FROM users WHERE id = $1`, [req.user.id]);
   const user = userRows[0];
   if (!user.bank_approved) return res.status(403).json({ error: "Your account isn't approved for bank shifts yet." });
+
+  // Driver requirement — purely operational (can't reach a domiciliary visit without
+  // transport), so this is a hard block like training.
+  if (shift.driver_required && !user.has_driving_licence) {
+    return res.status(403).json({ error: "This shift requires a driver with their own transport." });
+  }
+
+  // Gender requirement — set by a manager against a specific documented need (see
+  // compliance-and-data-protection.md); enforced as a hard block per that decision.
+  if (shift.required_gender && user.gender !== shift.required_gender) {
+    return res.status(403).json({ error: `This shift requires a ${shift.required_gender} carer.` });
+  }
 
   // Compliance check — every required skill must exist in the user's training records
   // with no expiry date in the past.
