@@ -1,13 +1,45 @@
 const express = require("express");
 const { z } = require("zod");
 const db = require("../db");
-const { requireAuth, requireSuperAdmin } = require("../middleware/auth");
+const { requireAuth, requireRole, requireSuperAdmin } = require("../middleware/auth");
 const { logAction } = require("../middleware/auditLog");
 const { hashPassword } = require("../utils/password");
 const email = require("../services/emailService");
 
 const router = express.Router();
-router.use(requireAuth, requireSuperAdmin);
+router.use(requireAuth);
+
+const PAY_PERIOD_TYPES = ["weekly", "biweekly", "four_weekly", "monthly"];
+
+// GET /companies/mine — any signed-in user (staff included, not just managers):
+// their own company's settings. Staff need this too, since their "hours & pay"
+// view groups by the same pay period cadence as everyone else's.
+router.get("/mine", async (req, res) => {
+  const { rows } = await db.query(
+    `SELECT id, name, code, pay_period_type FROM companies WHERE id = $1`,
+    [req.user.companyId]
+  );
+  res.json(rows[0]);
+});
+
+// PATCH /companies/mine  { payPeriodType } — manager/admin only: changes their
+// own company's pay period cadence. Different companies run different payroll
+// cycles, so this isn't a platform-wide setting like the ones below.
+router.patch("/mine", requireRole("manager", "admin"), async (req, res) => {
+  const { payPeriodType } = req.body || {};
+  if (!PAY_PERIOD_TYPES.includes(payPeriodType)) {
+    return res.status(400).json({ error: `Pay period must be one of: ${PAY_PERIOD_TYPES.join(", ")}.` });
+  }
+  const { rows } = await db.query(
+    `UPDATE companies SET pay_period_type = $1 WHERE id = $2 RETURNING id, name, code, pay_period_type`,
+    [payPeriodType, req.user.companyId]
+  );
+  await logAction({ actorId: req.user.id, action: "company.pay_period_changed", entityType: "company", entityId: req.user.companyId, metadata: { payPeriodType } });
+  res.json(rows[0]);
+});
+
+// Everything below here manages every company on the platform — super admin only.
+router.use(requireSuperAdmin);
 
 // GET /companies — super admin only. Lists every company on the platform, with a
 // headcount, so it's easy to see at a glance who's actually using it.
