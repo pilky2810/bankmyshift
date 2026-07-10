@@ -11,7 +11,8 @@
     "seed": "node src/seed.js",
     "add-requirements": "node src/add-shift-requirements.js",
     "add-handback": "node src/add-handback-support.js",
-    "add-multi-tenant": "node src/add-multi-tenant.js"
+    "add-multi-tenant": "node src/add-multi-tenant.js",
+    "add-pay-period": "node src/add-pay-period.js"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",
