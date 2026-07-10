@@ -21,7 +21,11 @@ async function send({ to, subject, text, html }) {
 const templates = {
   resetCode: (name, code) => ({
     subject: "Your Bank My Shift password reset code",
-    text: `Hi ${name},\n\nYour password reset code is: ${code}\n\nThis code expires in ${process.env.RESET_TOKEN_EXPIRES_MIN || 30} minutes. If you didn't request this, you can ignore this email.`,
+    text: `Hi ${name},\n\nYour password reset code is: ${code}\n\nThis code expires in ${process.env.RESET_TOKEN_EXPIRES_MIN || 30} minutes. If you didn't request this, you can ignore this email.${process.env.APP_URL ? `\n\nReset it here: ${process.env.APP_URL}` : ""}`,
+  }),
+  welcomeNewStaff: (name, loginEmail, tempPassword) => ({
+    subject: "Your Bank My Shift account is ready",
+    text: `Hi ${name},\n\nAn account has been created for you on Bank My Shift, so you can view and claim bank shifts.\n\nYour sign-in details:\nEmail: ${loginEmail}\nTemporary password: ${tempPassword}\n\nPlease sign in and change this password as soon as possible — go to Profile > Change password once you're logged in.${process.env.APP_URL ? `\n\nSign in here: ${process.env.APP_URL}` : ""}`,
   }),
   newShift: (name, shift) => ({
     subject: `New bank shift available — ${shift.location_name}`,
@@ -63,6 +67,7 @@ const templates = {
 
 module.exports = {
   sendPasswordResetEmail: (to, name, code) => send({ to, ...templates.resetCode(name, code) }),
+  sendWelcomeEmail: (to, name, tempPassword) => send({ to, ...templates.welcomeNewStaff(name, to, tempPassword) }),
   sendNewShiftEmail: (to, name, shift) => send({ to, ...templates.newShift(name, shift) }),
   sendClaimApprovedEmail: (to, name, shift) => send({ to, ...templates.claimApproved(name, shift) }),
   sendClaimRejectedEmail: (to, name, shift) => send({ to, ...templates.claimRejected(name, shift) }),
