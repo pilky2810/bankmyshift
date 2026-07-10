@@ -10,10 +10,26 @@ router.use(requireAuth);
 
 const SAFE_FIELDS = `id, role, first_name, last_name, email, phone, job_role, pay_band, bank_approved, status, created_at`;
 
-// GET /staff — manager/admin only: full directory
+// GET /staff — manager/admin only: full directory, including each person's
+// current training records (needed so the manager UI can show/edit skills —
+// previously this endpoint left that out and only /staff/me had it).
 router.get("/", requireRole("manager", "admin"), async (req, res) => {
   const { rows } = await db.query(`SELECT ${SAFE_FIELDS} FROM users WHERE role = 'staff' ORDER BY first_name`);
-  res.json(rows);
+  const ids = rows.map((r) => r.id);
+
+  let trainingByUser = {};
+  if (ids.length) {
+    const { rows: trainingRows } = await db.query(
+      `SELECT user_id, training_type, issued_date, expiry_date FROM training_records WHERE user_id = ANY($1)`,
+      [ids]
+    );
+    for (const t of trainingRows) {
+      if (!trainingByUser[t.user_id]) trainingByUser[t.user_id] = [];
+      trainingByUser[t.user_id].push({ training_type: t.training_type, issued_date: t.issued_date, expiry_date: t.expiry_date });
+    }
+  }
+
+  res.json(rows.map((r) => ({ ...r, training: trainingByUser[r.id] || [] })));
 });
 
 // GET /staff/me — any authenticated user, their own profile + training records
@@ -75,6 +91,16 @@ router.post("/:id/training", requireRole("manager", "admin"), async (req, res) =
   );
   await logAction({ actorId: req.user.id, action: "staff.training_updated", entityType: "user", entityId: id, metadata: { trainingType } });
   res.status(201).json(rows[0]);
+});
+
+// DELETE /staff/:id/training/:trainingType — manager/admin removes a training record
+// (used when unticking a skill in the manager UI — e.g. a cert lapsed or was entered
+// by mistake).
+router.delete("/:id/training/:trainingType", requireRole("manager", "admin"), async (req, res) => {
+  const { id, trainingType } = req.params;
+  await db.query(`DELETE FROM training_records WHERE user_id = $1 AND training_type = $2`, [id, trainingType]);
+  await logAction({ actorId: req.user.id, action: "staff.training_removed", entityType: "user", entityId: id, metadata: { trainingType } });
+  res.json({ message: "Training record removed." });
 });
 
 module.exports = router;
