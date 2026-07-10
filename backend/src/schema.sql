@@ -16,6 +16,10 @@ CREATE TABLE companies (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
   code CITEXT UNIQUE NOT NULL,
+  -- How this company's "hours & pay" totals are grouped — different companies
+  -- run different payroll cycles, so each sets its own. Enforced app-side too
+  -- (see routes/companies.js), the CHECK here is just a backstop.
+  pay_period_type TEXT NOT NULL DEFAULT 'weekly' CHECK (pay_period_type IN ('weekly', 'biweekly', 'four_weekly', 'monthly')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
