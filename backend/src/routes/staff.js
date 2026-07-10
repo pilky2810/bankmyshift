@@ -4,6 +4,7 @@ const db = require("../db");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { logAction } = require("../middleware/auditLog");
 const { hashPassword } = require("../utils/password");
+const email = require("../services/emailService");
 
 const router = express.Router();
 router.use(requireAuth);
@@ -64,6 +65,12 @@ router.post("/", requireRole("manager", "admin"), async (req, res) => {
     [d.firstName, d.lastName, d.email, d.phone || null, d.jobRole || null, d.payBand || null, passwordHash, d.gender || null, d.hasDrivingLicence]
   );
   await logAction({ actorId: req.user.id, action: "staff.created", entityType: "user", entityId: rows[0].id });
+
+  // Emails their temp password + a nudge to change it. This is a no-op (just logs a
+  // warning) until SENDGRID_API_KEY/EMAIL_FROM are set — see emailService.js — so
+  // account creation always succeeds even if email isn't configured yet.
+  await email.sendWelcomeEmail(rows[0].email, rows[0].first_name, d.temporaryPassword);
+
   res.status(201).json(rows[0]);
 });
 
