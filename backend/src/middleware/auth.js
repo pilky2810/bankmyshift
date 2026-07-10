@@ -10,7 +10,7 @@ function requireAuth(req, res, next) {
 
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = payload; // { id, role, email }
+    req.user = payload; // { id, role, email, companyId, isSuperAdmin }
     next();
   } catch (err) {
     return res.status(401).json({ error: "Your session has expired. Please sign in again." });
@@ -27,4 +27,13 @@ function requireRole(...allowedRoles) {
   };
 }
 
-module.exports = { requireAuth, requireRole };
+// Platform-level check, separate from company role — used only by the
+// "Companies" screen. A user can be a company admin AND a super admin at once.
+function requireSuperAdmin(req, res, next) {
+  if (!req.user || !req.user.isSuperAdmin) {
+    return res.status(403).json({ error: "You don't have permission to do that." });
+  }
+  next();
+}
+
+module.exports = { requireAuth, requireRole, requireSuperAdmin };
